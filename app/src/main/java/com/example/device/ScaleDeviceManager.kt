@@ -1,0 +1,144 @@
+package com.example.device
+
+import com.example.domain.model.ConnectionQualityEvent
+import com.example.domain.model.FutureSensorSlot
+import com.example.domain.model.ScaleSample
+import com.example.domain.model.SourceType
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.shareIn
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+/**
+ * Coordinates the active [ScaleDataSource] and exposes unified reactive streams.
+ * Simulated connections are strictly ephemeral and never persisted across app launches.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class ScaleDeviceManager(
+  val demoDataSource: DemoScaleDataSource = DemoScaleDataSource(),
+  val bleStubDataSource: BleScaleDataSourceStub = BleScaleDataSourceStub(),
+) {
+  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+  private val _selectedSourceType = MutableStateFlow(SourceType.DEMO)
+  val selectedSourceType: StateFlow<SourceType> = _selectedSourceType.asStateFlow()
+
+  private fun resolveSource(type: SourceType): ScaleDataSource =
+    when (type) {
+      SourceType.DEMO -> demoDataSource
+      SourceType.BLE_HARDWARE -> bleStubDataSource
+    }
+
+  val deviceInfo: StateFlow<ScaleDeviceInfo> = _selectedSourceType
+    .flatMapLatest { resolveSource(it).deviceInfo }
+    .stateIn(scope, SharingStarted.Eagerly, demoDataSource.deviceInfo.value)
+
+  val connectionState: StateFlow<ScaleConnectionState> = _selectedSourceType
+    .flatMapLatest { resolveSource(it).connectionState }
+    .stateIn(scope, SharingStarted.Eagerly, demoDataSource.connectionState.value)
+
+  val currentStreamEpochId: StateFlow<Int> = _selectedSourceType
+    .flatMapLatest { resolveSource(it).currentStreamEpochId }
+    .stateIn(scope, SharingStarted.Eagerly, demoDataSource.currentStreamEpochId.value)
+
+  val samples: SharedFlow<ScaleSample> = _selectedSourceType
+    .flatMapLatest { resolveSource(it).samples }
+    .shareIn(scope, SharingStarted.Eagerly, replay = 0)
+
+  private val _recentQualityEvents = MutableStateFlow<List<ConnectionQualityEvent>>(emptyList())
+  val recentQualityEvents: StateFlow<List<ConnectionQualityEvent>> = _recentQualityEvents.asStateFlow()
+
+  private val _latestSampleMonotonicMs = MutableStateFlow<Long?>(null)
+  val latestSampleMonotonicMs: StateFlow<Long?> = _latestSampleMonotonicMs.asStateFlow()
+
+  private val _observedSampleRateHz = MutableStateFlow<Double?>(null)
+  val observedSampleRateHz: StateFlow<Double?> = _observedSampleRateHz.asStateFlow()
+
+  private val _latestRawReadingG = MutableStateFlow<Double?>(null)
+  val latestRawReadingG: StateFlow<Double?> = _latestRawReadingG.asStateFlow()
+
+  val futureSensorSlots: List<FutureSensorSlot> = listOf(
+    FutureSensorSlot(sensorName = "水溫感測器（預留擴充）", unit = "°C", statusLabel = "尚未整合", latestReading = "—"),
+    FutureSensorSlot(sensorName = "TDS 濃度計（預留擴充）", unit = "ppm", statusLabel = "尚未整合", latestReading = "—"),
+  )
+
+  private val recentTimestamps = ArrayDeque<Long>()
+
+  init {
+    scope.launch {
+      merge(demoDataSource.qualityEvents, bleStubDataSource.qualityEvents).collect { event ->
+        _recentQualityEvents.update { list -> (listOf(event) + list).take(30) }
+      }
+    }
+    scope.launch {
+      samples.collect { sample ->
+        _latestRawReadingG.value = sample.rawWeightG
+        _latestSampleMonotonicMs.value = sample.monotonicReceiveMs
+        synchronized(recentTimestamps) {
+          if (recentTimestamps.isNotEmpty() &&
+            sample.monotonicReceiveMs - recentTimestamps.last() > 1000L
+          ) {
+            recentTimestamps.clear()
+          }
+          recentTimestamps.addLast(sample.monotonicReceiveMs)
+          while (recentTimestamps.size > 20) {
+            recentTimestamps.removeFirst()
+          }
+          if (recentTimestamps.size >= 3) {
+            val spanMs = recentTimestamps.last() - recentTimestamps.first()
+            _observedSampleRateHz.value = if (spanMs > 0L) {
+              ((recentTimestamps.size - 1) * 1000.0) / spanMs.toDouble()
+            } else null
+          } else {
+            _observedSampleRateHz.value = null
+          }
+        }
+      }
+    }
+  }
+
+  fun activeDataSource(): ScaleDataSource = resolveSource(_selectedSourceType.value)
+
+  fun activeDemoControls(): DemoScaleControls? =
+    activeDataSource() as? DemoScaleControls
+
+  suspend fun selectSourceType(type: SourceType) {
+    if (_selectedSourceType.value == type) return
+    demoDataSource.disconnect()
+    _latestRawReadingG.value = null
+    _latestSampleMonotonicMs.value = null
+    _observedSampleRateHz.value = null
+    synchronized(recentTimestamps) { recentTimestamps.clear() }
+    _selectedSourceType.value = type
+    if (type == SourceType.BLE_HARDWARE) {
+      bleStubDataSource.connect()
+    }
+  }
+
+  suspend fun connect() {
+    activeDataSource().connect()
+  }
+
+  suspend fun disconnect() {
+    activeDataSource().disconnect()
+    _latestRawReadingG.value = null
+    _observedSampleRateHz.value = null
+    synchronized(recentTimestamps) { recentTimestamps.clear() }
+  }
+
+  suspend fun tare() {
+    activeDataSource().tare()
+  }
+}

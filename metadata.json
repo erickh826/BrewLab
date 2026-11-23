@@ -1,0 +1,6 @@
+{
+  "name": "BrewLab",
+  "description": "Precision pour-over coffee brewing measurement and learning app with simulated scale data, recipe curves, live rate analysis, and local Room history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
