@@ -88,7 +88,9 @@ fun BrewScreen(
   recipes: List<Recipe>,
   selectedSourceType: SourceType,
   connectionState: ScaleConnectionState,
-  latestRawReadingG: Double?,
+  supportsTare: Boolean,
+  displayedBleWeightG: Double?,
+  hasWeightReading: Boolean,
   demoSimConfig: DemoSimConfig,
   onSelectRecipe: (Recipe) -> Unit,
   onToggleReminder: (Boolean) -> Unit,
@@ -383,7 +385,7 @@ fun BrewScreen(
               Spacer(modifier = Modifier.height(2.dp))
               Text(
                 text = if (selectedSourceType == SourceType.BLE_HARDWARE && liveState.phase == BrewPhase.IDLE) {
-                  latestRawReadingG?.takeIf { connectionState.isConnected }?.let { "$it g" } ?: "—"
+                  displayedBleWeightG?.takeIf { connectionState.isConnected }?.let { "$it g" } ?: "—"
                 } else {
                   BrewFormat.formatGrams(liveState.currentAddedWaterG)
                 },
@@ -494,15 +496,19 @@ fun BrewScreen(
 
               FilledTonalButton(
                 onClick = onTareBeforeStart,
-                enabled = selectedSourceType == SourceType.DEMO && connectionState.isConnected,
+                enabled = supportsTare && connectionState.isConnected && !liveState.isTaring,
                 modifier = Modifier
                   .weight(1f)
                   .height(52.dp)
                   .testTag("brew_tare_button"),
               ) {
-                Icon(Icons.Filled.Balance, contentDescription = null)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(if (selectedSourceType == SourceType.DEMO && liveState.hasTaredBeforeStart) "已歸零" else "歸零 (Tare)")
+                Text(
+                  when {
+                    liveState.isTaring -> "歸零中"
+                    liveState.hasTaredBeforeStart && connectionState.isConnected -> "已歸零"
+                    else -> "歸零 (Tare)"
+                  },
+                )
               }
             } else {
               // Tare explicitly disabled during active recording
@@ -523,8 +529,8 @@ fun BrewScreen(
             if (liveState.phase == BrewPhase.IDLE) {
               Button(
                 onClick = onStartRecording,
-                enabled = connectionState.isConnected && activeRecipe != null &&
-                  (selectedSourceType == SourceType.DEMO || latestRawReadingG != null),
+                enabled = connectionState.isConnected && !liveState.isTaring && activeRecipe != null &&
+                  (selectedSourceType == SourceType.DEMO || hasWeightReading),
                 modifier = Modifier
                   .weight(1f)
                   .height(52.dp)
@@ -550,9 +556,14 @@ fun BrewScreen(
             }
           }
 
-          if (selectedSourceType == SourceType.BLE_HARDWARE && liveState.phase == BrewPhase.IDLE) {
+          val tareMessage = liveState.tareError ?: if (connectionState.isConnected && !supportsTare) {
+            "這台電子秤未支援遠端歸零。"
+          } else {
+            null
+          }
+          if (liveState.phase == BrewPhase.IDLE && tareMessage != null) {
             Text(
-              text = "ESP32 韌體未提供遠端歸零（Tare）。",
+              text = tareMessage,
               modifier = Modifier.padding(top = 8.dp),
               style = MaterialTheme.typography.bodyMedium,
             )

@@ -66,14 +66,14 @@ class DemoScaleDataSource(
   private val _qualityEvents = MutableSharedFlow<ConnectionQualityEvent>(extraBufferCapacity = 64)
   override val qualityEvents: Flow<ConnectionQualityEvent> = _qualityEvents.asSharedFlow()
 
-  override val supportedCommands: Set<ScaleCommand> = setOf(
+  override val supportedCommands: StateFlow<Set<ScaleCommand>> = MutableStateFlow(setOf(
     ScaleCommand.CONNECT,
     ScaleCommand.DISCONNECT,
     ScaleCommand.TARE,
     ScaleCommand.MANUAL_SIM_POUR_RATE,
     ScaleCommand.SIMULATE_INTERRUPTION,
     ScaleCommand.TOGGLE_AUTO_SIM,
-  )
+  ))
 
   private val _demoConfig = MutableStateFlow(DemoSimConfig())
   override val demoConfig: StateFlow<DemoSimConfig> = _demoConfig.asStateFlow()
@@ -121,10 +121,11 @@ class DemoScaleDataSource(
     emitQualityEvent("模擬電子秤已斷線", "停止發送模擬數據樣本", true)
   }
 
-  override suspend fun tare() {
-    if (_connectionState.value !is ScaleConnectionState.Connected) return
+  override suspend fun tare(): ScaleTareResult {
+    if (!_connectionState.value.isConnected) return ScaleTareResult.DISCONNECTED
     tareOffsetG = simAssemblyBaseWeightG + addedWaterMassG
     emitQualityEvent("已執行模擬歸零 (Tare)", "將目前總重設為 0.0 g 參考點", false)
+    return ScaleTareResult.SUCCESS
   }
 
   override fun setAutoPhaseEnabled(enabled: Boolean) {

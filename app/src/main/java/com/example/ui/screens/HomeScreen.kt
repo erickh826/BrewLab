@@ -56,7 +56,7 @@ fun HomeScreen(
   deviceInfo: ScaleDeviceInfo,
   connectionState: ScaleConnectionState,
   selectedSourceType: SourceType,
-  latestRawReadingG: Double?,
+  displayedBleWeightG: Double?,
   recipes: List<Recipe>,
   recentSessions: List<BrewSession>,
   onConnectOrDisconnect: () -> Unit,
@@ -122,7 +122,7 @@ fun HomeScreen(
             ) {
               Text(
                 text = if (selectedSourceType == SourceType.BLE_HARDWARE) {
-                  latestRawReadingG?.let { "$it g" } ?: "—"
+                  displayedBleWeightG?.let { "$it g" } ?: "—"
                 } else {
                   BrewFormat.formatGrams(liveState.currentAddedWaterG)
                 },

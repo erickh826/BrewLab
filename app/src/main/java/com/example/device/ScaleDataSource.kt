@@ -75,6 +75,19 @@ enum class ScaleCommand {
   TOGGLE_AUTO_SIM,
 }
 
+enum class ScaleTareResult(val errorLabel: String? = null) {
+  SUCCESS,
+  UNSUPPORTED("電子秤未支援遠端歸零"),
+  DISCONNECTED("電子秤連線已中斷"),
+  BUSY("電子秤正在處理歸零，請稍後再試"),
+  TIMEOUT("等待歸零結果逾時"),
+  DEVICE_TIMEOUT("電子秤取樣逾時"),
+  NOT_READY("電子秤尚未就緒"),
+  WRITE_FAILED("無法傳送歸零命令"),
+  DEVICE_ERROR("電子秤回報歸零失敗"),
+  RECONNECT_REQUIRED("請重新連接電子秤後再試"),
+}
+
 data class ScaleDeviceInfo(
   val deviceId: String,
   val displayName: String,
@@ -98,11 +111,11 @@ interface ScaleDataSource {
   val currentStreamEpochId: StateFlow<Int>
   val samples: Flow<ScaleSample>
   val qualityEvents: Flow<ConnectionQualityEvent>
-  val supportedCommands: Set<ScaleCommand>
+  val supportedCommands: StateFlow<Set<ScaleCommand>>
 
   suspend fun connect()
   suspend fun disconnect()
-  suspend fun tare()
+  suspend fun tare(): ScaleTareResult
 }
 
 interface DemoScaleControls {

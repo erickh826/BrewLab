@@ -3,8 +3,10 @@ package com.example.brew
 import android.os.SystemClock
 import com.example.data.AppPreferences
 import com.example.data.BrewRepository
+import com.example.device.ScaleConnectionId
 import com.example.device.ScaleConnectionState
 import com.example.device.ScaleDeviceManager
+import com.example.device.ScaleTareResult
 import com.example.domain.measurement.ActivePlannedStep
 import com.example.domain.measurement.RateEstimator
 import com.example.domain.measurement.SessionAnalyzer
@@ -32,6 +34,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 enum class BrewPhase {
@@ -45,6 +48,8 @@ data class LiveBrewState(
   val selectedRecipe: Recipe? = null,
   val activeSnapshot: RecipeSnapshot? = null,
   val hasTaredBeforeStart: Boolean = false,
+  val isTaring: Boolean = false,
+  val tareError: String? = null,
   val setupReminderExpanded: Boolean = true,
   val elapsedMs: Long = 0L,
   val currentAddedWaterG: Double? = null,
@@ -98,6 +103,7 @@ class BrewRecordingCoordinator(
   private val recordedSamples = mutableListOf<ScaleSample>()
   private val recordedEvents = mutableListOf<BrewEvent>()
   private val lock = Any()
+  private var taredConnection: ScaleConnectionId? = null
 
   init {
     scope.launch {
@@ -125,6 +131,24 @@ class BrewRecordingCoordinator(
       }
     }
 
+    scope.launch(Dispatchers.Main.immediate) {
+      deviceManager.activeConnection.collect { connection ->
+        if (taredConnection != null && taredConnection != deviceManager.currentConnectionId()) {
+          taredConnection = null
+          _state.update { it.copy(hasTaredBeforeStart = false) }
+        }
+        if (connection != null && !_state.value.isTaring) {
+          _state.update { it.copy(tareError = null) }
+        }
+      }
+    }
+
+    scope.launch(Dispatchers.Main.immediate) {
+      deviceManager.selectedSourceType.collect {
+        _state.update { it.copy(tareError = null) }
+      }
+    }
+
     // Keep smoothing window synced when idle
     scope.launch {
       preferences.smoothingWindow.collect { window ->
@@ -145,19 +169,35 @@ class BrewRecordingCoordinator(
     _state.update { it.copy(setupReminderExpanded = expanded) }
   }
 
-  suspend fun performTareBeforeStart() {
-    if (_state.value.phase != BrewPhase.IDLE) return
-    if (!deviceManager.connectionState.value.isConnected) return
-    if (deviceManager.tare()) {
-      _state.update { it.copy(hasTaredBeforeStart = true) }
+  suspend fun performTareBeforeStart() = withContext(Dispatchers.Main.immediate) {
+    val state = _state.value
+    if (state.phase != BrewPhase.IDLE || state.isTaring) return@withContext
+    val connection = deviceManager.currentConnectionId() ?: return@withContext
+    taredConnection = null
+    _state.update { it.copy(isTaring = true, hasTaredBeforeStart = false, tareError = null) }
+    try {
+      val result = deviceManager.tare()
+      val currentResult = if (deviceManager.currentConnectionId() == connection) {
+        result
+      } else {
+        ScaleTareResult.DISCONNECTED
+      }
+      val success = currentResult == ScaleTareResult.SUCCESS
+      if (success) taredConnection = connection
+      val sameSource = deviceManager.selectedSourceType.value == connection.sourceType
+      _state.update {
+        it.copy(hasTaredBeforeStart = success, tareError = currentResult.errorLabel.takeIf { sameSource })
+      }
+    } finally {
+      _state.update { it.copy(isTaring = false) }
     }
   }
 
   fun startRecording() {
     val current = _state.value
-    if (current.phase != BrewPhase.IDLE) return
+    if (current.phase != BrewPhase.IDLE || current.isTaring) return
     val recipe = current.selectedRecipe ?: return
-    if (!deviceManager.connectionState.value.isConnected) return
+    val connection = deviceManager.currentConnectionId() ?: return
 
     val nowEpoch = System.currentTimeMillis()
     val nowMono = SystemClock.elapsedRealtime()
@@ -167,7 +207,7 @@ class BrewRecordingCoordinator(
 
     val latestWeight = deviceManager.latestRawReadingG.value
     if (info.sourceType == SourceType.BLE_HARDWARE && latestWeight == null) return
-    val initialBaseline = if (info.isSimulated && current.hasTaredBeforeStart) {
+    val initialBaseline = if (current.hasTaredBeforeStart && taredConnection == connection) {
       0.0
     } else {
       latestWeight ?: 0.0
@@ -371,6 +411,7 @@ class BrewRecordingCoordinator(
   private fun resetToIdle() {
     timerJob?.cancel()
     timerJob = null
+    taredConnection = null
     synchronized(lock) {
       recordedSamples.clear()
       recordedEvents.clear()
@@ -379,6 +420,7 @@ class BrewRecordingCoordinator(
       it.copy(
         phase = BrewPhase.IDLE,
         hasTaredBeforeStart = false,
+        tareError = null,
         activeSnapshot = null,
         elapsedMs = 0L,
         currentAddedWaterG = null,

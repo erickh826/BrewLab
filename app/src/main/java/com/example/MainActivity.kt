@@ -160,11 +160,13 @@ fun BrewLabRoot(
   val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
   val deviceInfo by viewModel.deviceInfo.collectAsStateWithLifecycle()
   val selectedSourceType by viewModel.selectedSourceType.collectAsStateWithLifecycle()
+  val supportsTare by viewModel.supportsTare.collectAsStateWithLifecycle()
   val smoothingWindow by viewModel.smoothingWindow.collectAsStateWithLifecycle()
   val demoNoiseG by viewModel.demoNoiseG.collectAsStateWithLifecycle()
   val demoSimConfig by viewModel.demoSimConfig.collectAsStateWithLifecycle()
   val diagnostics by viewModel.diagnosticsState.collectAsStateWithLifecycle()
   val latestRawReadingG by viewModel.latestRawReadingG.collectAsStateWithLifecycle()
+  val displayedBleWeightG by viewModel.displayedBleWeightG.collectAsStateWithLifecycle()
   val context = LocalContext.current
   val blePermissionLauncher = rememberLauncherForActivityResult(
     ActivityResultContracts.RequestMultiplePermissions(),
@@ -316,7 +318,7 @@ fun BrewLabRoot(
                 deviceInfo = deviceInfo,
                 connectionState = connectionState,
                 selectedSourceType = selectedSourceType,
-                latestRawReadingG = latestRawReadingG,
+                displayedBleWeightG = displayedBleWeightG,
                 recipes = recipes,
                 recentSessions = sessions,
                 onConnectOrDisconnect = {
@@ -335,7 +337,9 @@ fun BrewLabRoot(
                 recipes = recipes,
                 selectedSourceType = selectedSourceType,
                 connectionState = connectionState,
-                latestRawReadingG = latestRawReadingG,
+                supportsTare = supportsTare,
+                displayedBleWeightG = displayedBleWeightG,
+                hasWeightReading = latestRawReadingG != null,
                 demoSimConfig = demoSimConfig,
                 onSelectRecipe = { viewModel.selectRecipe(it) },
                 onToggleReminder = { viewModel.setSetupReminderExpanded(it) },
@@ -441,8 +445,9 @@ fun BrewLabRoot(
               DeviceSettingsScreen(
                 selectedSourceType = selectedSourceType,
                 connectionState = connectionState,
+                supportsTare = supportsTare,
                 deviceInfo = deviceInfo,
-                latestRawReadingG = latestRawReadingG,
+                displayedBleWeightG = displayedBleWeightG,
                 bleCandidates = bleCandidates,
                 bleInvalidPayload = bleInvalidPayload,
                 smoothingWindow = smoothingWindow,

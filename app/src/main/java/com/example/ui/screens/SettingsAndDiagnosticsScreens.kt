@@ -50,8 +50,9 @@ import com.example.ui.theme.SignalTealBg
 fun DeviceSettingsScreen(
   selectedSourceType: SourceType,
   connectionState: ScaleConnectionState,
+  supportsTare: Boolean,
   deviceInfo: ScaleDeviceInfo,
-  latestRawReadingG: Double?,
+  displayedBleWeightG: Double?,
   bleCandidates: List<BleScaleCandidate>,
   bleInvalidPayload: Boolean,
   smoothingWindow: SmoothingWindow,
@@ -160,7 +161,7 @@ fun DeviceSettingsScreen(
                 }
               }
             }
-            val weight = latestRawReadingG.takeIf { connectionState.isConnected }
+            val weight = displayedBleWeightG.takeIf { connectionState.isConnected }
             Text(
               text = "最新重量：${weight?.let { "$it g" } ?: "—"}",
               style = MonoReadoutSmall,
@@ -174,11 +175,13 @@ fun DeviceSettingsScreen(
               else -> "未接收重量通知"
             }
             Text("接收狀態：$receiveLabel", style = MaterialTheme.typography.bodyMedium)
-            Text(
-              "ESP32 韌體未提供遠端歸零（Tare）。",
-              style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (connectionState.isConnected) {
+              Text(
+                if (supportsTare) "支援遠端歸零，可在沖煮頁操作。" else "這台電子秤未支援遠端歸零。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
           }
           Spacer(modifier = Modifier.height(6.dp))
           Text(

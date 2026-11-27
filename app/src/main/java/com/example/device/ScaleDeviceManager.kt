@@ -14,14 +14,18 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+internal data class ScaleConnectionId(val sourceType: SourceType, val streamEpochId: Int)
 
 /**
  * Coordinates the active [ScaleDataSource] and exposes unified reactive streams.
@@ -57,6 +61,20 @@ class ScaleDeviceManager(
   val currentStreamEpochId: StateFlow<Int> = _selectedSourceType
     .flatMapLatest { resolveSource(it).currentStreamEpochId }
     .stateIn(scope, SharingStarted.Eagerly, demoDataSource.currentStreamEpochId.value)
+
+  val supportsTare: StateFlow<Boolean> = _selectedSourceType
+    .flatMapLatest { resolveSource(it).supportedCommands }
+    .map { ScaleCommand.TARE in it }
+    .stateIn(scope, SharingStarted.Eagerly, ScaleCommand.TARE in demoDataSource.supportedCommands.value)
+
+  internal val activeConnection = _selectedSourceType
+    .flatMapLatest { type ->
+      val source = resolveSource(type)
+      combine(source.connectionState, source.currentStreamEpochId) { state, epoch ->
+        if (state.isConnected) ScaleConnectionId(type, epoch) else null
+      }
+    }
+    .stateIn(scope, SharingStarted.Eagerly, null)
 
   val samples: SharedFlow<ScaleSample> = _selectedSourceType
     .flatMapLatest { resolveSource(it).samples }
@@ -124,6 +142,12 @@ class ScaleDeviceManager(
 
   fun activeDataSource(): ScaleDataSource = resolveSource(_selectedSourceType.value)
 
+  internal fun currentConnectionId(): ScaleConnectionId? {
+    val source = activeDataSource()
+    if (!source.connectionState.value.isConnected) return null
+    return ScaleConnectionId(source.sourceType, source.currentStreamEpochId.value)
+  }
+
   fun activeDemoControls(): DemoScaleControls? =
     activeDataSource() as? DemoScaleControls
 
@@ -154,12 +178,11 @@ class ScaleDeviceManager(
     recentTimestamps.clear()
   }
 
-  suspend fun tare(): Boolean = withContext(Dispatchers.Main.immediate) {
+  suspend fun tare(): ScaleTareResult = withContext(Dispatchers.Main.immediate) {
     val source = activeDataSource()
-    if (ScaleCommand.TARE !in source.supportedCommands || !source.connectionState.value.isConnected) {
-      return@withContext false
-    }
-    source.tare()
-    true
+    val connection = currentConnectionId() ?: return@withContext ScaleTareResult.DISCONNECTED
+    if (ScaleCommand.TARE !in source.supportedCommands.value) return@withContext ScaleTareResult.UNSUPPORTED
+    val result = source.tare()
+    if (currentConnectionId() == connection) result else ScaleTareResult.DISCONNECTED
   }
 }

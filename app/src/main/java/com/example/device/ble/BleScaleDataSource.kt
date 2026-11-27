@@ -26,6 +26,7 @@ import com.example.device.ScaleCommand
 import com.example.device.ScaleConnectionState
 import com.example.device.ScaleDataSource
 import com.example.device.ScaleDeviceInfo
+import com.example.device.ScaleTareResult
 import com.example.domain.model.ConnectionQualityEvent
 import com.example.domain.model.SampleQuality
 import com.example.domain.model.ScaleSample
@@ -48,7 +49,9 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
   private val handler = Handler(Looper.getMainLooper())
 
   override val sourceType = SourceType.BLE_HARDWARE
-  override val supportedCommands = setOf(ScaleCommand.CONNECT, ScaleCommand.DISCONNECT)
+  private val baseCommands = setOf(ScaleCommand.CONNECT, ScaleCommand.DISCONNECT)
+  private val _supportedCommands = MutableStateFlow(baseCommands)
+  override val supportedCommands = _supportedCommands.asStateFlow()
 
   private val defaultDevice = ScaleDeviceInfo(
     deviceId = "",
@@ -78,6 +81,9 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
   private var scanner: BluetoothLeScanner? = null
   private var scanCallback: ScanCallback? = null
   private var activeGatt: BluetoothGatt? = null
+  private var pendingCommandDescriptor: BluetoothGattDescriptor? = null
+  private var commandCharacteristic: BluetoothGattCharacteristic? = null
+  private var tareSession: BleTareSession? = null
   private var timeout: Runnable? = null
   private var subscribedAtMs = 0L
 
@@ -213,17 +219,37 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
     override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
       val acknowledgedAtMs = SystemClock.elapsedRealtime()
       onActiveGatt(gatt) {
-        if (_connectionState.value != ScaleConnectionState.Subscribing ||
-          descriptor.uuid != CCCD_UUID || !isWeightCharacteristic(descriptor.characteristic)
+        if (descriptor === pendingCommandDescriptor) {
+          pendingCommandDescriptor = null
+          if (status == BluetoothGatt.GATT_SUCCESS) {
+            commandCharacteristic = descriptor.characteristic
+            tareSession = BleTareSession()
+            _supportedCommands.value = baseCommands + ScaleCommand.TARE
+          } else {
+            report("無法啟用歸零回覆通知", "命令 CCCD 寫入失敗（$status）", true)
+          }
+          return@onActiveGatt
+        }
+        if (_connectionState.value != ScaleConnectionState.Subscribing || descriptor.uuid != CCCD_UUID ||
+          !isWeightCharacteristic(descriptor.characteristic)
         ) return@onActiveGatt
         if (status != BluetoothGatt.GATT_SUCCESS) {
           fail("啟用重量通知失敗（$status）")
           return@onActiveGatt
         }
+        subscribeToCommand(gatt)
         subscribedAtMs = acknowledgedAtMs
         _currentStreamEpochId.value += 1
         _connectionState.value = ScaleConnectionState.AwaitingSample
         awaitNextWeight()
+      }
+    }
+
+    override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+      onActiveGatt(gatt) {
+        if (characteristic === commandCharacteristic) {
+          tareSession?.onWriteResult(status == BluetoothGatt.GATT_SUCCESS)
+        }
       }
     }
 
@@ -234,7 +260,7 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
     ) {
       val receivedAtMs = SystemClock.elapsedRealtime()
       onActiveGatt(gatt) {
-        if (isWeightCharacteristic(characteristic)) receiveWeight(value, receivedAtMs)
+        receiveNotification(characteristic, value, receivedAtMs)
       }
     }
 
@@ -244,7 +270,7 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
       val receivedAtMs = SystemClock.elapsedRealtime()
       val payload = characteristic.value?.copyOf() ?: return
       onActiveGatt(gatt) {
-        if (isWeightCharacteristic(characteristic)) receiveWeight(payload, receivedAtMs)
+        receiveNotification(characteristic, payload, receivedAtMs)
       }
     }
   }
@@ -260,7 +286,6 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
     }
   }
 
-  @Suppress("DEPRECATION")
   private fun subscribeToWeight(gatt: BluetoothGatt) {
     val characteristic = gatt.getService(SERVICE_UUID)?.getCharacteristic(WEIGHT_UUID)
     val descriptor = characteristic?.getDescriptor(CCCD_UUID)
@@ -271,14 +296,40 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
       return
     }
     _connectionState.value = ScaleConnectionState.Subscribing
+    if (!enableNotifications(gatt, descriptor)) fail("無法將重量通知設定寫入電子秤")
+  }
+
+  private fun subscribeToCommand(gatt: BluetoothGatt) {
+    val characteristic = gatt.getService(SERVICE_UUID)?.getCharacteristic(COMMAND_UUID) ?: return
+    val requiredProperties = BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_NOTIFY
+    val descriptor = characteristic.getDescriptor(CCCD_UUID)
+    if (descriptor == null || characteristic.properties and requiredProperties != requiredProperties) {
+      report("電子秤未支援遠端歸零", "命令特徵缺少有回應的寫入、通知或 CCCD", true)
+      return
+    }
+    pendingCommandDescriptor = descriptor
+    if (!enableNotifications(gatt, descriptor)) {
+      pendingCommandDescriptor = null
+      report("無法啟用歸零回覆通知", "無法開始寫入命令 CCCD", true)
+    }
+  }
+
+  @Suppress("DEPRECATION")
+  private fun enableNotifications(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor): Boolean {
     val enable = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-    val writeStarted = gatt.setCharacteristicNotification(characteristic, true) &&
+    return gatt.setCharacteristicNotification(descriptor.characteristic, true) &&
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         gatt.writeDescriptor(descriptor, enable) == BluetoothStatusCodes.SUCCESS
       } else {
         descriptor.setValue(enable) && gatt.writeDescriptor(descriptor)
       }
-    if (!writeStarted) fail("無法將重量通知設定寫入電子秤")
+  }
+
+  private fun receiveNotification(characteristic: BluetoothGattCharacteristic, payload: ByteArray, receivedAtMs: Long) {
+    when {
+      isWeightCharacteristic(characteristic) -> receiveWeight(payload, receivedAtMs)
+      characteristic === commandCharacteristic -> tareSession?.onReply(payload)
+    }
   }
 
   private fun isWeightCharacteristic(characteristic: BluetoothGattCharacteristic) =
@@ -330,7 +381,36 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
     _deviceInfo.value = defaultDevice
   }
 
-  override suspend fun tare() = Unit
+  override suspend fun tare(): ScaleTareResult = withContext(Dispatchers.Main.immediate) {
+    val gatt = activeGatt
+    if (gatt == null || !_connectionState.value.isConnected) return@withContext ScaleTareResult.DISCONNECTED
+    val characteristic = commandCharacteristic ?: return@withContext ScaleTareResult.UNSUPPORTED
+    val session = tareSession ?: return@withContext ScaleTareResult.UNSUPPORTED
+    session.tare { payload ->
+      try {
+        writeCommand(gatt, characteristic, payload)
+      } catch (_: SecurityException) {
+        fail("藍牙連線權限已撤銷", disconnected = true)
+        false
+      } catch (_: IllegalStateException) {
+        false
+      }
+    }
+  }
+
+  @Suppress("DEPRECATION")
+  private fun writeCommand(
+    gatt: BluetoothGatt,
+    characteristic: BluetoothGattCharacteristic,
+    payload: ByteArray,
+  ): Boolean {
+    val writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      return gatt.writeCharacteristic(characteristic, payload, writeType) == BluetoothStatusCodes.SUCCESS
+    }
+    characteristic.writeType = writeType
+    return characteristic.setValue(payload) && gatt.writeCharacteristic(characteristic)
+  }
 
   private fun fail(reason: String, disconnected: Boolean = false) {
     closeTransport()
@@ -349,6 +429,12 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
     clearCandidates()
     val gatt = activeGatt
     activeGatt = null
+    val session = tareSession
+    tareSession = null
+    commandCharacteristic = null
+    pendingCommandDescriptor = null
+    _supportedCommands.value = baseCommands
+    session?.close()
     _invalidPayload.value = false
     if (gatt != null) {
       runCatching { gatt.disconnect() }
@@ -384,6 +470,7 @@ class BleScaleDataSource(context: Context) : ScaleDataSource {
     val SERVICE_UUID: UUID = UUID.fromString("b1e00001-8a20-4c8f-a45e-6f12e3d45c90")
     val SERVICE_PARCEL_UUID = ParcelUuid(SERVICE_UUID)
     val WEIGHT_UUID: UUID = UUID.fromString("b1e00002-8a20-4c8f-a45e-6f12e3d45c90")
+    val COMMAND_UUID: UUID = UUID.fromString("b1e00003-8a20-4c8f-a45e-6f12e3d45c90")
     val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
   }
 }

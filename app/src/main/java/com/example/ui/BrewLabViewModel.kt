@@ -20,14 +20,21 @@ import com.example.domain.model.RecipeValidationResult
 import com.example.domain.model.SessionAnalysisResult
 import com.example.domain.model.SmoothingWindow
 import com.example.domain.model.SourceType
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+private const val BLE_WEIGHT_DISPLAY_INTERVAL_MS = 1_000L
 
 data class DiagnosticsUiState(
   val sourceType: SourceType,
@@ -58,7 +65,25 @@ class BrewLabViewModel(application: Application) : AndroidViewModel(application)
   val connectionState = deviceManager.connectionState
   val deviceInfo = deviceManager.deviceInfo
   val selectedSourceType = deviceManager.selectedSourceType
+  val supportsTare = deviceManager.supportsTare
   val latestRawReadingG = deviceManager.latestRawReadingG
+  @OptIn(ExperimentalCoroutinesApi::class)
+  val displayedBleWeightG: StateFlow<Double?> = deviceManager.activeConnection
+    .flatMapLatest { connection ->
+      if (connection?.sourceType != SourceType.BLE_HARDWARE) {
+        flowOf(null)
+      } else {
+        flow<Double?> {
+          emit(null)
+          emit(latestRawReadingG.filterNotNull().first())
+          while (true) {
+            delay(BLE_WEIGHT_DISPLAY_INTERVAL_MS)
+            emit(latestRawReadingG.value)
+          }
+        }
+      }
+    }
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L, replayExpirationMillis = 0L), null)
   val bleCandidates = deviceManager.bleCandidates
   val bleInvalidPayload = deviceManager.bleInvalidPayload
   val smoothingWindow = preferences.smoothingWindow
