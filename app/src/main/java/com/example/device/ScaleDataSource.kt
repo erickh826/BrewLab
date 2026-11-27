@@ -12,12 +12,39 @@ sealed interface ScaleConnectionState {
   val isConnected: Boolean
     get() = this is Connected
 
+  val canDisconnect: Boolean
+    get() = when (this) {
+      Scanning, SelectingDevice, Connecting, DiscoveringServices, Subscribing,
+      AwaitingSample, Connected, Reconnecting -> true
+      else -> false
+    }
+
   data object Disconnected : ScaleConnectionState {
     override val label: String = "未連線"
   }
 
+  data object Scanning : ScaleConnectionState {
+    override val label: String = "正在掃描電子秤…"
+  }
+
+  data object SelectingDevice : ScaleConnectionState {
+    override val label: String = "請選擇電子秤"
+  }
+
   data object Connecting : ScaleConnectionState {
     override val label: String = "連線中…"
+  }
+
+  data object DiscoveringServices : ScaleConnectionState {
+    override val label: String = "正在搜尋重量服務…"
+  }
+
+  data object Subscribing : ScaleConnectionState {
+    override val label: String = "正在啟用重量通知…"
+  }
+
+  data object AwaitingSample : ScaleConnectionState {
+    override val label: String = "藍牙已連線 · 等待有效重量"
   }
 
   data object Connected : ScaleConnectionState {
@@ -32,8 +59,10 @@ sealed interface ScaleConnectionState {
     override val label: String = "數據中斷：$reason"
   }
 
-  data class NotIntegrated(val message: String = "尚未整合") : ScaleConnectionState {
-    override val label: String = message
+  data class BleFailure(override val label: String) : ScaleConnectionState
+
+  data class DisconnectedWithReason(val reason: String) : ScaleConnectionState {
+    override val label: String = "已斷線 · $reason"
   }
 }
 

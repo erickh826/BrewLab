@@ -1,5 +1,6 @@
 package com.example.device
 
+import com.example.device.ble.BleScaleDataSource
 import com.example.domain.model.ConnectionQualityEvent
 import com.example.domain.model.FutureSensorSlot
 import com.example.domain.model.ScaleSample
@@ -8,18 +9,19 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Coordinates the active [ScaleDataSource] and exposes unified reactive streams.
@@ -27,10 +29,13 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ScaleDeviceManager(
+  private val bleDataSource: BleScaleDataSource,
   val demoDataSource: DemoScaleDataSource = DemoScaleDataSource(),
-  val bleStubDataSource: BleScaleDataSourceStub = BleScaleDataSourceStub(),
 ) {
-  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+  val bleCandidates = bleDataSource.candidates
+  val bleInvalidPayload = bleDataSource.invalidPayload
 
   private val _selectedSourceType = MutableStateFlow(SourceType.DEMO)
   val selectedSourceType: StateFlow<SourceType> = _selectedSourceType.asStateFlow()
@@ -38,7 +43,7 @@ class ScaleDeviceManager(
   private fun resolveSource(type: SourceType): ScaleDataSource =
     when (type) {
       SourceType.DEMO -> demoDataSource
-      SourceType.BLE_HARDWARE -> bleStubDataSource
+      SourceType.BLE_HARDWARE -> bleDataSource
     }
 
   val deviceInfo: StateFlow<ScaleDeviceInfo> = _selectedSourceType
@@ -55,6 +60,7 @@ class ScaleDeviceManager(
 
   val samples: SharedFlow<ScaleSample> = _selectedSourceType
     .flatMapLatest { resolveSource(it).samples }
+    .filter(::isCurrentSample)
     .shareIn(scope, SharingStarted.Eagerly, replay = 0)
 
   private val _recentQualityEvents = MutableStateFlow<List<ConnectionQualityEvent>>(emptyList())
@@ -78,35 +84,42 @@ class ScaleDeviceManager(
 
   init {
     scope.launch {
-      merge(demoDataSource.qualityEvents, bleStubDataSource.qualityEvents).collect { event ->
+      merge(demoDataSource.qualityEvents, bleDataSource.qualityEvents).collect { event ->
         _recentQualityEvents.update { list -> (listOf(event) + list).take(30) }
       }
     }
     scope.launch {
-      samples.collect { sample ->
-        _latestRawReadingG.value = sample.rawWeightG
-        _latestSampleMonotonicMs.value = sample.monotonicReceiveMs
-        synchronized(recentTimestamps) {
-          if (recentTimestamps.isNotEmpty() &&
-            sample.monotonicReceiveMs - recentTimestamps.last() > 1000L
-          ) {
-            recentTimestamps.clear()
-          }
-          recentTimestamps.addLast(sample.monotonicReceiveMs)
-          while (recentTimestamps.size > 20) {
-            recentTimestamps.removeFirst()
-          }
-          if (recentTimestamps.size >= 3) {
-            val spanMs = recentTimestamps.last() - recentTimestamps.first()
-            _observedSampleRateHz.value = if (spanMs > 0L) {
-              ((recentTimestamps.size - 1) * 1000.0) / spanMs.toDouble()
-            } else null
-          } else {
-            _observedSampleRateHz.value = null
-          }
-        }
+      bleDataSource.connectionState.collect { state ->
+        if (_selectedSourceType.value == SourceType.BLE_HARDWARE && !state.isConnected) clearReadings()
       }
     }
+    scope.launch {
+      samples.collect { sample ->
+        if (!isCurrentSample(sample)) return@collect
+        _latestRawReadingG.value = sample.rawWeightG
+        _latestSampleMonotonicMs.value = sample.monotonicReceiveMs
+        if (recentTimestamps.isNotEmpty() &&
+          sample.monotonicReceiveMs - recentTimestamps.last() > 1000L
+        ) {
+          recentTimestamps.clear()
+        }
+        recentTimestamps.addLast(sample.monotonicReceiveMs)
+        while (recentTimestamps.size > 20) {
+          recentTimestamps.removeFirst()
+        }
+        val spanMs = recentTimestamps.last() - recentTimestamps.first()
+        _observedSampleRateHz.value = if (recentTimestamps.size >= 3 && spanMs > 0L) {
+          (recentTimestamps.size - 1) * 1000.0 / spanMs
+        } else null
+      }
+    }
+  }
+
+  private fun isCurrentSample(sample: ScaleSample): Boolean {
+    val source = activeDataSource()
+    return sample.sourceType == source.sourceType &&
+      (sample.sourceType != SourceType.BLE_HARDWARE ||
+        source.connectionState.value.isConnected && sample.streamEpochId == source.currentStreamEpochId.value)
   }
 
   fun activeDataSource(): ScaleDataSource = resolveSource(_selectedSourceType.value)
@@ -114,31 +127,39 @@ class ScaleDeviceManager(
   fun activeDemoControls(): DemoScaleControls? =
     activeDataSource() as? DemoScaleControls
 
-  suspend fun selectSourceType(type: SourceType) {
-    if (_selectedSourceType.value == type) return
-    demoDataSource.disconnect()
-    _latestRawReadingG.value = null
-    _latestSampleMonotonicMs.value = null
-    _observedSampleRateHz.value = null
-    synchronized(recentTimestamps) { recentTimestamps.clear() }
+  suspend fun selectSourceType(type: SourceType) = withContext(Dispatchers.Main.immediate) {
+    if (_selectedSourceType.value == type) return@withContext
+    activeDataSource().disconnect()
+    clearReadings()
     _selectedSourceType.value = type
-    if (type == SourceType.BLE_HARDWARE) {
-      bleStubDataSource.connect()
-    }
   }
 
-  suspend fun connect() {
+  suspend fun connect() = withContext(Dispatchers.Main.immediate) {
     activeDataSource().connect()
   }
 
-  suspend fun disconnect() {
-    activeDataSource().disconnect()
-    _latestRawReadingG.value = null
-    _observedSampleRateHz.value = null
-    synchronized(recentTimestamps) { recentTimestamps.clear() }
+  suspend fun selectBleDevice(id: String) = withContext(Dispatchers.Main.immediate) {
+    if (_selectedSourceType.value == SourceType.BLE_HARDWARE) bleDataSource.selectDevice(id)
   }
 
-  suspend fun tare() {
-    activeDataSource().tare()
+  suspend fun disconnect() = withContext(Dispatchers.Main.immediate) {
+    activeDataSource().disconnect()
+    clearReadings()
+  }
+
+  private fun clearReadings() {
+    _latestRawReadingG.value = null
+    _latestSampleMonotonicMs.value = null
+    _observedSampleRateHz.value = null
+    recentTimestamps.clear()
+  }
+
+  suspend fun tare(): Boolean = withContext(Dispatchers.Main.immediate) {
+    val source = activeDataSource()
+    if (ScaleCommand.TARE !in source.supportedCommands || !source.connectionState.value.isConnected) {
+      return@withContext false
+    }
+    source.tare()
+    true
   }
 }

@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.device.ScaleConnectionState
 import com.example.device.ScaleDeviceInfo
+import com.example.device.ble.BleScaleCandidate
 import com.example.domain.model.FutureSensorSlot
 import com.example.domain.model.SmoothingWindow
 import com.example.domain.model.SourceType
@@ -50,6 +51,9 @@ fun DeviceSettingsScreen(
   selectedSourceType: SourceType,
   connectionState: ScaleConnectionState,
   deviceInfo: ScaleDeviceInfo,
+  latestRawReadingG: Double?,
+  bleCandidates: List<BleScaleCandidate>,
+  bleInvalidPayload: Boolean,
   smoothingWindow: SmoothingWindow,
   demoNoiseG: Double,
   isRecording: Boolean,
@@ -59,6 +63,7 @@ fun DeviceSettingsScreen(
   onSelectDemoNoise: (Double) -> Unit,
   onConnect: () -> Unit,
   onDisconnect: () -> Unit,
+  onSelectBleDevice: (String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
@@ -100,14 +105,14 @@ fun DeviceSettingsScreen(
               )
               Column(modifier = Modifier.weight(1f)) {
                 Text(
-                  text = if (source == SourceType.DEMO) "模擬電子秤（模擬數據）" else "實體藍牙電子秤（尚未整合）",
+                  text = if (source == SourceType.DEMO) "模擬電子秤（模擬數據）" else "實體藍牙電子秤",
                   style = MaterialTheme.typography.titleMedium,
                 )
                 Text(
                   text = if (source == SourceType.DEMO) {
                     "以約 10 Hz 產生含真實時間戳與可調噪聲的練習讀數，獨立於配方目標。"
                   } else {
-                    "尚未整合：預留商業 BLE 電子秤或自製 ESP32 裝置的 ScaleDataSource 適配介面，不會回報假連線。"
+                    "連接 BrewLab-Scale，接收 ESP32 傳送的克數讀數。"
                   },
                   style = MaterialTheme.typography.bodyMedium,
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -129,15 +134,55 @@ fun DeviceSettingsScreen(
               Text(if (connectionState.isConnected) "斷開模擬電子秤" else "連接模擬電子秤")
             }
           } else {
-            StatusPill(
-              text = "實體硬體狀態：尚未整合（未實作 BLE 掃描與封包解析）",
-              containerColor = SignalCrimsonBg,
-              contentColor = SignalCrimson,
+            val canDisconnect = connectionState.canDisconnect
+            OutlinedButton(
+              onClick = { if (canDisconnect) onDisconnect() else onConnect() },
+              modifier = Modifier.fillMaxWidth().testTag("settings_ble_scan_button"),
+            ) {
+              Text(
+                when (connectionState) {
+                  ScaleConnectionState.Scanning, ScaleConnectionState.SelectingDevice -> "取消掃描與選擇"
+                  ScaleConnectionState.Connecting, ScaleConnectionState.DiscoveringServices,
+                  ScaleConnectionState.Subscribing -> "取消連線"
+                  else -> if (canDisconnect) "斷開電子秤" else "掃描電子秤"
+                },
+              )
+            }
+            if (connectionState == ScaleConnectionState.Scanning ||
+              connectionState == ScaleConnectionState.SelectingDevice
+            ) {
+              bleCandidates.forEach { candidate ->
+                OutlinedButton(
+                  onClick = { onSelectBleDevice(candidate.id) },
+                  modifier = Modifier.fillMaxWidth(),
+                ) {
+                  Text("${candidate.name} · ${candidate.id.takeLast(5)}")
+                }
+              }
+            }
+            val weight = latestRawReadingG.takeIf { connectionState.isConnected }
+            Text(
+              text = "最新重量：${weight?.let { "$it g" } ?: "—"}",
+              style = MonoReadoutSmall,
+              modifier = Modifier.testTag("settings_ble_latest_weight"),
+            )
+            val receiveLabel = when {
+              bleInvalidPayload -> "已略過無效重量通知"
+              weight != null -> "持續接收重量通知"
+              connectionState == ScaleConnectionState.AwaitingSample -> "等待第一筆有效重量通知"
+              connectionState.isConnected -> "正在更新重量"
+              else -> "未接收重量通知"
+            }
+            Text("接收狀態：$receiveLabel", style = MaterialTheme.typography.bodyMedium)
+            Text(
+              "ESP32 韌體未提供遠端歸零（Tare）。",
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
           }
           Spacer(modifier = Modifier.height(6.dp))
           Text(
-            text = "裝置資訊：${deviceInfo.detailLabel}",
+            text = "裝置資訊：${deviceInfo.detailLabel.takeIf { deviceInfo.sourceType == selectedSourceType } ?: "—"}",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )

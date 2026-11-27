@@ -58,6 +58,9 @@ class BrewLabViewModel(application: Application) : AndroidViewModel(application)
   val connectionState = deviceManager.connectionState
   val deviceInfo = deviceManager.deviceInfo
   val selectedSourceType = deviceManager.selectedSourceType
+  val latestRawReadingG = deviceManager.latestRawReadingG
+  val bleCandidates = deviceManager.bleCandidates
+  val bleInvalidPayload = deviceManager.bleInvalidPayload
   val smoothingWindow = preferences.smoothingWindow
   val demoNoiseG = preferences.demoNoiseG
 
@@ -137,6 +140,12 @@ class BrewLabViewModel(application: Application) : AndroidViewModel(application)
   fun connectScale() {
     viewModelScope.launch {
       deviceManager.connect()
+    }
+  }
+
+  fun selectBleDevice(id: String) {
+    viewModelScope.launch {
+      deviceManager.selectBleDevice(id)
     }
   }
 

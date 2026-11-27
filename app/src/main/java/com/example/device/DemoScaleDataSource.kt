@@ -97,6 +97,7 @@ class DemoScaleDataSource(
     _connectionState.value = ScaleConnectionState.Connecting
     emitQualityEvent("開始連接模擬電子秤", "初始化模擬數據串流（獨立於配方目標）", false)
     delay(250L)
+    if (_connectionState.value != ScaleConnectionState.Connecting) return
 
     connectedAtMonotonicMs = SystemClock.elapsedRealtime()
     deviceClockBaseMs = 10_000L

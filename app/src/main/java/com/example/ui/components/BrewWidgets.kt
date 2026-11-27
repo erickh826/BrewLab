@@ -68,18 +68,14 @@ fun SourceConnectionPill(
   modifier: Modifier = Modifier,
 ) {
   val (bg, fg) = when {
-    sourceType == SourceType.BLE_HARDWARE -> SignalCrimsonBg to SignalCrimson
     connectionState is ScaleConnectionState.Connected -> SignalTealBg to SignalTeal
-    connectionState is ScaleConnectionState.Connecting ||
-      connectionState is ScaleConnectionState.Reconnecting -> SignalOchreBg to SignalOchre
-    connectionState is ScaleConnectionState.Interrupted -> SignalCrimsonBg to SignalCrimson
+    connectionState.canDisconnect -> SignalOchreBg to SignalOchre
+    connectionState is ScaleConnectionState.Interrupted ||
+      connectionState is ScaleConnectionState.DisconnectedWithReason ||
+      connectionState is ScaleConnectionState.BleFailure -> SignalCrimsonBg to SignalCrimson
     else -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
   }
-  val label = if (sourceType == SourceType.BLE_HARDWARE) {
-    "實體藍牙：尚未整合"
-  } else {
-    "模擬數據 · ${connectionState.label}"
-  }
+  val label = "${sourceType.displayName} · ${connectionState.label}"
   StatusPill(text = label, containerColor = bg, contentColor = fg, modifier = modifier)
 }
 

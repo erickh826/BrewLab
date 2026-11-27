@@ -2,8 +2,10 @@ package com.example
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
@@ -38,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -51,6 +54,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.brew.BrewPhase
+import com.example.device.ble.missingBleScalePermissions
+import com.example.domain.model.SourceType
 import com.example.ui.BrewLabViewModel
 import com.example.ui.screens.BrewScreen
 import com.example.ui.screens.DeviceSettingsScreen
@@ -159,6 +164,22 @@ fun BrewLabRoot(
   val demoNoiseG by viewModel.demoNoiseG.collectAsStateWithLifecycle()
   val demoSimConfig by viewModel.demoSimConfig.collectAsStateWithLifecycle()
   val diagnostics by viewModel.diagnosticsState.collectAsStateWithLifecycle()
+  val latestRawReadingG by viewModel.latestRawReadingG.collectAsStateWithLifecycle()
+  val context = LocalContext.current
+  val blePermissionLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestMultiplePermissions(),
+  ) {
+    if (viewModel.selectedSourceType.value == SourceType.BLE_HARDWARE) viewModel.connectScale()
+  }
+
+  fun connectFromSettings() {
+    val missing = if (selectedSourceType == SourceType.BLE_HARDWARE) {
+      missingBleScalePermissions(context)
+    } else {
+      emptyList()
+    }
+    if (missing.isEmpty()) viewModel.connectScale() else blePermissionLauncher.launch(missing.toTypedArray())
+  }
 
   val isTopLevel = TopLevelDestinations.any { dest ->
     currentDestination?.hierarchy?.any { it.route == dest.route } == true
@@ -295,6 +316,7 @@ fun BrewLabRoot(
                 deviceInfo = deviceInfo,
                 connectionState = connectionState,
                 selectedSourceType = selectedSourceType,
+                latestRawReadingG = latestRawReadingG,
                 recipes = recipes,
                 recentSessions = sessions,
                 onConnectOrDisconnect = {
@@ -313,10 +335,17 @@ fun BrewLabRoot(
                 recipes = recipes,
                 selectedSourceType = selectedSourceType,
                 connectionState = connectionState,
+                latestRawReadingG = latestRawReadingG,
                 demoSimConfig = demoSimConfig,
                 onSelectRecipe = { viewModel.selectRecipe(it) },
                 onToggleReminder = { viewModel.setSetupReminderExpanded(it) },
-                onConnect = { viewModel.connectScale() },
+                onConnect = {
+                  if (selectedSourceType == SourceType.BLE_HARDWARE) {
+                    navController.navigate(BrewRoutes.DEVICE_SETTINGS)
+                  } else {
+                    viewModel.connectScale()
+                  }
+                },
                 onDisconnect = { viewModel.disconnectScale() },
                 onTareBeforeStart = { viewModel.tareScaleBeforeStart() },
                 onStartRecording = { viewModel.startBrewRecording() },
@@ -407,10 +436,15 @@ fun BrewLabRoot(
             }
 
             composable(BrewRoutes.DEVICE_SETTINGS) {
+              val bleCandidates by viewModel.bleCandidates.collectAsStateWithLifecycle()
+              val bleInvalidPayload by viewModel.bleInvalidPayload.collectAsStateWithLifecycle()
               DeviceSettingsScreen(
                 selectedSourceType = selectedSourceType,
                 connectionState = connectionState,
                 deviceInfo = deviceInfo,
+                latestRawReadingG = latestRawReadingG,
+                bleCandidates = bleCandidates,
+                bleInvalidPayload = bleInvalidPayload,
                 smoothingWindow = smoothingWindow,
                 demoNoiseG = demoNoiseG,
                 isRecording = liveState.phase != BrewPhase.IDLE,
@@ -418,8 +452,9 @@ fun BrewLabRoot(
                 onSelectSourceType = { viewModel.selectSourceType(it) },
                 onSelectSmoothingWindow = { viewModel.setSmoothingWindow(it) },
                 onSelectDemoNoise = { viewModel.setDemoNoise(it) },
-                onConnect = { viewModel.connectScale() },
+                onConnect = { connectFromSettings() },
                 onDisconnect = { viewModel.disconnectScale() },
+                onSelectBleDevice = viewModel::selectBleDevice,
               )
             }
 

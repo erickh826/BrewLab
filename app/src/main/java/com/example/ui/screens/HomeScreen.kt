@@ -56,6 +56,7 @@ fun HomeScreen(
   deviceInfo: ScaleDeviceInfo,
   connectionState: ScaleConnectionState,
   selectedSourceType: SourceType,
+  latestRawReadingG: Double?,
   recipes: List<Recipe>,
   recentSessions: List<BrewSession>,
   onConnectOrDisconnect: () -> Unit,
@@ -95,7 +96,7 @@ fun HomeScreen(
                 text = if (selectedSourceType == SourceType.DEMO) {
                   "目前使用「模擬數據」進行練習與曲線驗證"
                 } else {
-                  "實體藍牙電子秤適配邊界（尚未整合）"
+                  "目前使用 ESP32 實體藍牙電子秤"
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -120,7 +121,11 @@ fun HomeScreen(
               horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
               Text(
-                text = BrewFormat.formatGrams(liveState.currentAddedWaterG),
+                text = if (selectedSourceType == SourceType.BLE_HARDWARE) {
+                  latestRawReadingG?.let { "$it g" } ?: "—"
+                } else {
+                  BrewFormat.formatGrams(liveState.currentAddedWaterG)
+                },
                 style = MonoReadoutLarge,
                 color = MaterialTheme.colorScheme.onSurface,
               )

@@ -267,12 +267,4 @@ class MeasurementLogicTest {
     assertEquals(2, gapAnalysis.qualitySummary.streamEpochCount)
     assertTrue(gapAnalysis.validWeightSegments.size >= 3)
   }
-
-  @Test
-  fun `ble stub strictly reports unintegrated and never claims physical connection`() {
-    val stub = com.example.device.BleScaleDataSourceStub()
-    assertEquals(SourceType.BLE_HARDWARE, stub.sourceType)
-    assertFalse(stub.connectionState.value.isConnected)
-    assertEquals("尚未整合", stub.connectionState.value.label)
-  }
 }

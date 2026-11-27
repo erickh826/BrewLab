@@ -7,6 +7,7 @@ import com.example.data.AppPreferences
 import com.example.data.BrewLabDatabase
 import com.example.data.BrewRepository
 import com.example.device.ScaleDeviceManager
+import com.example.device.ble.BleScaleDataSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,7 +34,7 @@ class BrewLabApplication : Application() {
   }
 
   val deviceManager: ScaleDeviceManager by lazy {
-    ScaleDeviceManager()
+    ScaleDeviceManager(bleDataSource = BleScaleDataSource(applicationContext))
   }
 
   val brewCoordinator: BrewRecordingCoordinator by lazy {

@@ -88,6 +88,7 @@ fun BrewScreen(
   recipes: List<Recipe>,
   selectedSourceType: SourceType,
   connectionState: ScaleConnectionState,
+  latestRawReadingG: Double?,
   demoSimConfig: DemoSimConfig,
   onSelectRecipe: (Recipe) -> Unit,
   onToggleReminder: (Boolean) -> Unit,
@@ -371,13 +372,21 @@ fun BrewScreen(
           ) {
             Column {
               Text(
-                text = "累計注水量",
+                text = if (selectedSourceType == SourceType.BLE_HARDWARE && liveState.phase == BrewPhase.IDLE) {
+                  "電子秤讀數"
+                } else {
+                  "累計注水量"
+                },
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
               Spacer(modifier = Modifier.height(2.dp))
               Text(
-                text = BrewFormat.formatGrams(liveState.currentAddedWaterG),
+                text = if (selectedSourceType == SourceType.BLE_HARDWARE && liveState.phase == BrewPhase.IDLE) {
+                  latestRawReadingG?.takeIf { connectionState.isConnected }?.let { "$it g" } ?: "—"
+                } else {
+                  BrewFormat.formatGrams(liveState.currentAddedWaterG)
+                },
                 style = MonoReadoutLarge,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.testTag("brew_cumulative_water_text"),
@@ -463,8 +472,10 @@ fun BrewScreen(
           ) {
             if (liveState.phase == BrewPhase.IDLE) {
               OutlinedButton(
-                onClick = { if (connectionState.isConnected) onDisconnect() else onConnect() },
-                enabled = selectedSourceType == SourceType.DEMO,
+                onClick = {
+                  if (selectedSourceType == SourceType.DEMO && connectionState.isConnected) onDisconnect()
+                  else onConnect()
+                },
                 modifier = Modifier
                   .weight(1f)
                   .height(52.dp)
@@ -474,7 +485,7 @@ fun BrewScreen(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                   when {
-                    selectedSourceType == SourceType.BLE_HARDWARE -> "尚未整合"
+                    selectedSourceType == SourceType.BLE_HARDWARE -> "裝置設定"
                     connectionState.isConnected -> "斷開電子秤"
                     else -> "連接模擬秤"
                   }
@@ -483,7 +494,7 @@ fun BrewScreen(
 
               FilledTonalButton(
                 onClick = onTareBeforeStart,
-                enabled = connectionState.isConnected,
+                enabled = selectedSourceType == SourceType.DEMO && connectionState.isConnected,
                 modifier = Modifier
                   .weight(1f)
                   .height(52.dp)
@@ -491,7 +502,7 @@ fun BrewScreen(
               ) {
                 Icon(Icons.Filled.Balance, contentDescription = null)
                 Spacer(modifier = Modifier.width(6.dp))
-                Text(if (liveState.hasTaredBeforeStart) "已歸零" else "歸零 (Tare)")
+                Text(if (selectedSourceType == SourceType.DEMO && liveState.hasTaredBeforeStart) "已歸零" else "歸零 (Tare)")
               }
             } else {
               // Tare explicitly disabled during active recording
@@ -512,7 +523,8 @@ fun BrewScreen(
             if (liveState.phase == BrewPhase.IDLE) {
               Button(
                 onClick = onStartRecording,
-                enabled = connectionState.isConnected && activeRecipe != null,
+                enabled = connectionState.isConnected && activeRecipe != null &&
+                  (selectedSourceType == SourceType.DEMO || latestRawReadingG != null),
                 modifier = Modifier
                   .weight(1f)
                   .height(52.dp)
@@ -536,6 +548,14 @@ fun BrewScreen(
                 Text("結束沖煮")
               }
             }
+          }
+
+          if (selectedSourceType == SourceType.BLE_HARDWARE && liveState.phase == BrewPhase.IDLE) {
+            Text(
+              text = "ESP32 韌體未提供遠端歸零（Tare）。",
+              modifier = Modifier.padding(top = 8.dp),
+              style = MaterialTheme.typography.bodyMedium,
+            )
           }
 
           // Manual Event Marking Controls during recording

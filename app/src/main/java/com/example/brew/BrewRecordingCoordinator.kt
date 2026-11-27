@@ -148,8 +148,9 @@ class BrewRecordingCoordinator(
   suspend fun performTareBeforeStart() {
     if (_state.value.phase != BrewPhase.IDLE) return
     if (!deviceManager.connectionState.value.isConnected) return
-    deviceManager.tare()
-    _state.update { it.copy(hasTaredBeforeStart = true) }
+    if (deviceManager.tare()) {
+      _state.update { it.copy(hasTaredBeforeStart = true) }
+    }
   }
 
   fun startRecording() {
@@ -164,10 +165,12 @@ class BrewRecordingCoordinator(
     val smoothing = preferences.smoothingWindow.value
     val snapshot = recipe.toSnapshot(capturedAtEpochMs = nowEpoch)
 
-    val initialBaseline = if (current.hasTaredBeforeStart) {
+    val latestWeight = deviceManager.latestRawReadingG.value
+    if (info.sourceType == SourceType.BLE_HARDWARE && latestWeight == null) return
+    val initialBaseline = if (info.isSimulated && current.hasTaredBeforeStart) {
       0.0
     } else {
-      deviceManager.latestRawReadingG.value ?: 0.0
+      latestWeight ?: 0.0
     }
 
     synchronized(lock) {
@@ -448,7 +451,11 @@ class BrewRecordingCoordinator(
       _state.update {
         it.copy(
           currentAddedWaterG = incoming.rawWeightG,
-          dataQualityLabel = if (incoming.qualityState == SampleQuality.WARMING_UP) "預熱緩衝中" else "模擬連線穩定",
+          dataQualityLabel = when {
+            incoming.qualityState == SampleQuality.WARMING_UP -> "預熱緩衝中"
+            incoming.sourceType == SourceType.BLE_HARDWARE -> "接收電子秤重量中"
+            else -> "模擬連線穩定"
+          },
           isDataStreamHealthy = incoming.qualityState == SampleQuality.VALID,
         )
       }
